@@ -52,9 +52,17 @@ async function loadWeather(query) {
     const base = '/api/weather';
     const encodedQuery = encodeURIComponent(query);
     const [currentResponse, forecastResponse] = await Promise.all([fetch(`${base}?type=current&city=${encodedQuery}`), fetch(`${base}?type=forecast&city=${encodedQuery}`)]);
-    const current = await currentResponse.json(); const forecast = await forecastResponse.json();
-    if (!currentResponse.ok || current.cod === '404') throw new Error('Location not found. Check the spelling and try again.');
-    if (!forecastResponse.ok || !Array.isArray(forecast.list)) throw new Error('The forecast could not be loaded right now.');
+    const readResponse = async (response) => {
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error('The local preview server cannot run the Vercel weather API. Deploy to Vercel or use Vercel Dev to test weather locally.');
+      }
+      return response.json();
+    };
+    const current = await readResponse(currentResponse); const forecast = await readResponse(forecastResponse);
+    if (current.cod === '404') throw new Error('Location not found. Check the spelling and try again.');
+    if (!currentResponse.ok) throw new Error(current.message || 'The current weather could not be loaded right now.');
+    if (!forecastResponse.ok || !Array.isArray(forecast.list)) throw new Error(forecast.message || 'The forecast could not be loaded right now.');
     if (currentRequest !== requestId) return;
     localStorage.setItem('Location', query); const video = document.querySelector('#weather-video'); video.src = videoFor(current.weather?.[0]?.description); video.load(); video.play().catch(() => {}); renderWeather(current, forecast.list);
   } catch (error) { if (currentRequest === requestId) content.innerHTML = `<div class="notice notice-error glass-panel"><i class="fa-solid fa-triangle-exclamation"></i><div><strong>Weather unavailable</strong><p>${escapeHtml(error.message)}</p></div></div>`; }
