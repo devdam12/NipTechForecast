@@ -29,7 +29,7 @@ const iconFor = (description = '') => { const condition = description.toLowerCas
 const videoFor = (description = '') => { const condition = description.toLowerCase(); if (condition.includes('rain') || condition.includes('drizzle')) return videos.rain; if (condition.includes('snow')) return videos.snow; if (condition.includes('clear')) return videos.clear; if (condition.includes('cloud')) return videos.cloud; return videos.default; };
 
 function shell(content) {
-  app.innerHTML = `<video id="weather-video" class="weather-video" autoplay muted loop playsinline aria-hidden="true" src="${videos.default}"></video><div class="atmosphere"></div><header class="site-header"><button class="brand" data-action="dashboard"><img src="/assets/images/icons8-upload-to-cloud-60.png" alt="" /><span>NipWeatherForecast</span><i></i></button><nav class="header-actions">${currentUser ? `<span class="user-email">${escapeHtml(currentUser.email)}</span><button class="button button-quiet" data-action="logout">Log out</button>` : '<button class="button button-quiet" data-action="signin">Sign in</button><button class="button button-primary compact" data-action="signup">Get started</button>'}</nav></header><main class="page-content">${content}</main><footer><span>Live weather data by OpenWeatherMap</span><span>NipWeatherForecast</span></footer><div id="toast" role="status" aria-live="polite"></div>`;
+  app.innerHTML = `<video id="weather-video" class="weather-video" autoplay muted loop playsinline aria-hidden="true" src="${videos.default}"></video><div class="atmosphere"></div><header class="site-header"><button class="brand" data-action="dashboard"><img src="/assets/images/icons8-upload-to-cloud-60.png" alt="" /><span>NipWeatherForecast</span><i></i></button><nav class="header-actions">${currentUser ? `<span class="user-email">${escapeHtml(currentUser.email)}</span><button class="button button-quiet" data-action="logout">Log out</button>` : '<button class="button button-quiet" data-action="signin">Sign in</button><button class="button button-primary compact" data-action="signup">Get started</button>'}</nav></header><main class="page-content">${content}</main><footer><span>Live weather data by Open-Meteo</span><span>NipWeatherForecast</span></footer><div id="toast" role="status" aria-live="polite"></div>`;
   app.querySelectorAll('[data-action]').forEach((element) => element.addEventListener('click', () => handleAction(element.dataset.action)));
 }
 
@@ -49,28 +49,43 @@ async function loadWeather(query) {
   const content = document.querySelector('#weather-content'); const currentRequest = ++requestId;
   content.innerHTML = '<div class="loading glass-panel"><i class="fa-solid fa-spinner fa-spin"></i><span>Reading live conditions...</span></div>';
   try {
-    const base = '/api/weather';
-    const encodedQuery = encodeURIComponent(query);
-    const [currentResponse, forecastResponse] = await Promise.all([fetch(`${base}?type=current&city=${encodedQuery}`), fetch(`${base}?type=forecast&city=${encodedQuery}`)]);
-    const readResponse = async (response) => {
-      const contentType = response.headers.get('content-type') || '';
-      if (!contentType.includes('application/json')) {
-        throw new Error('The local preview server cannot run the Vercel weather API. Deploy to Vercel or use Vercel Dev to test weather locally.');
-      }
-      return response.json();
-    };
-    const current = await readResponse(currentResponse); const forecast = await readResponse(forecastResponse);
-    if (current.cod === '404') throw new Error('Location not found. Check the spelling and try again.');
-    if (!currentResponse.ok) throw new Error(current.message || 'The current weather could not be loaded right now.');
-    if (!forecastResponse.ok || !Array.isArray(forecast.list)) throw new Error(forecast.message || 'The forecast could not be loaded right now.');
+    const geocodeResponse = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(query)}&count=1&language=en&format=json`);
+    if (!geocodeResponse.ok) throw new Error('The location search service is unavailable right now.');
+    const geocode = await geocodeResponse.json();
+    const location = geocode.results?.[0];
+    if (!location) throw new Error('Location not found. Check the spelling and try again.');
+
+    const weatherUrl = new URL('https://api.open-meteo.com/v1/forecast');
+    weatherUrl.searchParams.set('latitude', location.latitude);
+    weatherUrl.searchParams.set('longitude', location.longitude);
+    weatherUrl.searchParams.set('current', 'temperature_2m,relative_humidity_2m,apparent_temperature,weather_code,cloud_cover,pressure_msl,wind_speed_10m,wind_direction_10m,visibility');
+    weatherUrl.searchParams.set('daily', 'weather_code,temperature_2m_max,temperature_2m_min,sunrise,sunset,precipitation_sum');
+    weatherUrl.searchParams.set('timezone', 'auto');
+    const weatherResponse = await fetch(weatherUrl);
+    if (!weatherResponse.ok) throw new Error('The weather service is unavailable right now.');
+    const weather = await weatherResponse.json();
     if (currentRequest !== requestId) return;
-    localStorage.setItem('Location', query); const video = document.querySelector('#weather-video'); video.src = videoFor(current.weather?.[0]?.description); video.load(); video.play().catch(() => {}); renderWeather(current, forecast.list);
+    localStorage.setItem('Location', query); const video = document.querySelector('#weather-video'); video.src = videoFor(weatherDescription(weather.current.weather_code)); video.load(); video.play().catch(() => {}); renderWeather(location, weather);
   } catch (error) { if (currentRequest === requestId) content.innerHTML = `<div class="notice notice-error glass-panel"><i class="fa-solid fa-triangle-exclamation"></i><div><strong>Weather unavailable</strong><p>${escapeHtml(error.message)}</p></div></div>`; }
 }
 
-function renderWeather(current, forecastList) {
-  const description = current.weather?.[0]?.description || 'Unknown conditions'; const dayMap = new Map(); forecastList.forEach((item) => { const day = item.dt_txt.slice(0, 10); if (!dayMap.has(day)) dayMap.set(day, item); }); const days = [...dayMap.values()].slice(0, 5); const formatDay = (date) => new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(new Date(`${date}T12:00:00`));
-  document.querySelector('#weather-content').innerHTML = `<section class="weather-grid"><article class="hero-weather glass-panel"><div class="location-line"><span><i class="fa-solid fa-location-dot"></i> ${escapeHtml(current.name)}, ${escapeHtml(current.sys?.country || '')}</span><b><i></i> LIVE</b></div><div class="temperature-line"><div><strong>${Math.round(current.main.temp)}<sup>°C</sup></strong><span>Feels like ${Math.round(current.main.feels_like)}° · H ${Math.round(current.main.temp_max)}° · L ${Math.round(current.main.temp_min)}°</span></div><i class="fa-solid ${iconFor(description)} weather-symbol"></i></div><h2>${escapeHtml(description)}</h2><p class="condition-copy">Observed now at ${escapeHtml(current.name)}.</p><div class="coordinates"><span>Humidity <b>${current.main.humidity}%</b></span><span>Wind <b>${Math.round((current.wind?.speed || 0) * 3.6)} km/h</b></span><span>Pressure <b>${current.main.pressure} hPa</b></span></div></article><aside class="metrics"><div class="metric glass-panel"><span>Visibility</span><strong>${((current.visibility || 0) / 1000).toFixed(1)} <small>km</small></strong><i class="fa-solid fa-eye"></i></div><div class="metric glass-panel"><span>Wind direction</span><strong>${current.wind?.deg ?? '—'}<small>°</small></strong><i class="fa-solid fa-compass"></i></div><div class="metric glass-panel"><span>Cloud cover</span><strong>${current.clouds?.all ?? '—'}<small>%</small></strong><i class="fa-solid fa-cloud"></i></div><div class="metric glass-panel"><span>Sunrise</span><strong>${new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(current.sys.sunrise * 1000))}</strong><i class="fa-solid fa-sun"></i></div></aside></section><section class="forecast-section"><div class="section-heading"><div><span class="eyebrow">Near-term outlook</span><h2>Five-day forecast</h2></div><span class="source-label">OpenWeatherMap</span></div><div class="forecast-grid">${days.map((day) => `<article class="forecast-card glass-panel"><span>${formatDay(day.dt_txt.slice(0, 10))}</span><i class="fa-solid ${iconFor(day.weather?.[0]?.description)}"></i><strong>${Math.round(day.main.temp)}°</strong><small>${escapeHtml(day.weather?.[0]?.description || '')}</small></article>`).join('')}</div></section>`;
+function weatherDescription(code) {
+  if ([0, 1].includes(code)) return 'clear sky';
+  if ([2, 3, 45, 48].includes(code)) return 'cloudy';
+  if ([51, 53, 55, 56, 57, 61, 63, 65, 66, 67, 80, 81, 82].includes(code)) return 'rain';
+  if ([71, 73, 75, 77, 85, 86].includes(code)) return 'snow';
+  if ([95, 96, 99].includes(code)) return 'thunderstorm';
+  return 'cloudy';
+}
+
+function renderWeather(location, weather) {
+  const current = weather.current;
+  const daily = weather.daily;
+  const description = weatherDescription(current.weather_code);
+  const days = daily.time.slice(0, 5).map((date, index) => ({ date, code: daily.weather_code[index], max: daily.temperature_2m_max[index], min: daily.temperature_2m_min[index], rain: daily.precipitation_sum[index] }));
+  const formatDay = (date) => new Intl.DateTimeFormat(undefined, { weekday: 'short' }).format(new Date(`${date}T12:00:00`));
+  const formatTime = (value) => new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(value));
+  document.querySelector('#weather-content').innerHTML = `<section class="weather-grid"><article class="hero-weather glass-panel"><div class="location-line"><span><i class="fa-solid fa-location-dot"></i> ${escapeHtml(location.name)}, ${escapeHtml(location.country_code || '')}</span><b><i></i> LIVE</b></div><div class="temperature-line"><div><strong>${Math.round(current.temperature_2m)}<sup>°C</sup></strong><span>Feels like ${Math.round(current.apparent_temperature)}° · H ${Math.round(daily.temperature_2m_max[0])}° · L ${Math.round(daily.temperature_2m_min[0])}°</span></div><i class="fa-solid ${iconFor(description)} weather-symbol"></i></div><h2>${escapeHtml(description)}</h2><p class="condition-copy">Observed now at ${escapeHtml(location.name)}.</p><div class="coordinates"><span>Humidity <b>${current.relative_humidity_2m}%</b></span><span>Wind <b>${Math.round(current.wind_speed_10m)} km/h</b></span><span>Pressure <b>${Math.round(current.pressure_msl)} hPa</b></span></div></article><aside class="metrics"><div class="metric glass-panel"><span>Visibility</span><strong>${((current.visibility || 0) / 1000).toFixed(1)} <small>km</small></strong><i class="fa-solid fa-eye"></i></div><div class="metric glass-panel"><span>Wind direction</span><strong>${current.wind_direction_10m}<small>°</small></strong><i class="fa-solid fa-compass"></i></div><div class="metric glass-panel"><span>Cloud cover</span><strong>${current.cloud_cover}<small>%</small></strong><i class="fa-solid fa-cloud"></i></div><div class="metric glass-panel"><span>Sunrise</span><strong>${formatTime(daily.sunrise[0])}</strong><i class="fa-solid fa-sun"></i></div></aside></section><section class="forecast-section"><div class="section-heading"><div><span class="eyebrow">Near-term outlook</span><h2>Five-day forecast</h2></div><span class="source-label">Open-Meteo</span></div><div class="forecast-grid">${days.map((day) => `<article class="forecast-card glass-panel"><span>${formatDay(day.date)}</span><i class="fa-solid ${iconFor(weatherDescription(day.code))}"></i><strong>${Math.round(day.max)}° <small>${Math.round(day.min)}°</small></strong><small>${escapeHtml(weatherDescription(day.code))}${day.rain ? ` · ${day.rain} mm rain` : ''}</small></article>`).join('')}</div></section>`;
 }
 
 async function handleAuthSubmit(event, signup) {
